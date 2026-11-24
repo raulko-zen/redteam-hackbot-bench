@@ -2,10 +2,12 @@ import io
 import json
 import lzma
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +19,7 @@ from hackbench.campaign import drive  # noqa: E402
 from hackbench.config import deep_merge, host_arch, lint_target, load_bench, load_targets, resolve_selection, select  # noqa: E402
 from hackbench.cost import CostTracker  # noqa: E402
 from hackbench.items import scan_items  # noqa: E402
+from hackbench.launcher import LaunchError, TmuxLauncher  # noqa: E402
 from hackbench.match import OmpJudge, build_judge_prompt, heuristic, parse_judge_output  # noqa: E402
 from hackbench.material import extract_deb  # noqa: E402
 from hackbench.report import summarize  # noqa: E402
@@ -292,6 +295,56 @@ class FakeLauncher:
             p.wait(5)
 
 
+class BrokenSendLauncher(FakeLauncher):
+    """tmux refuses the /hunt line, as tmux 3.6 did for a bare "=name" pane target."""
+
+    def send_line(self, name, text):
+        raise LaunchError(f"tmux send-keys failed (1): can't find pane: ={name}")
+
+
+class RecordingTmux(TmuxLauncher):
+    def __init__(self):
+        super().__init__("/nonexistent.sock", "tmux", "tmux")
+        self.calls = []
+
+    def _t(self, *args, check=True, capture=False):
+        self.calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+
+class LauncherTargetTests(unittest.TestCase):
+    def test_pane_commands_target_the_session_exactly_with_a_colon(self):
+        t = RecordingTmux()
+        t.alive("hb-x")
+        t.pane_dead("hb-x")
+        t.send_enter("hb-x")
+        t.capture("hb-x")
+        t.kill("hb-x")
+        targets = {c[0]: c[c.index("-t") + 1] for c in t.calls}
+        self.assertEqual(targets, {"has-session": "=hb-x", "display-message": "=hb-x:", "send-keys": "=hb-x:",
+                                   "capture-pane": "=hb-x:", "kill-session": "=hb-x"})
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux not installed")
+    def test_real_tmux_resolves_every_target(self):
+        d = tempfile.mkdtemp(dir="/tmp")  # short socket path
+        t = TmuxLauncher(f"{d}/t.sock", "tmux", shutil.which("tmux"))
+        try:
+            t.start("hb-probe-01", Path(d), ["cat"], {"PATH": os.environ.get("PATH", "")})
+            self.assertTrue(t.alive("hb-probe-01"))
+            self.assertFalse(t.pane_dead("hb-probe-01"))
+            t._t("send-keys", "-t", t._pane("hb-probe-01"), "-l", "--", "probe-line")  # raises on a bad target
+            t.send_enter("hb-probe-01")
+            deadline = time.time() + 5
+            while "probe-line" not in t.capture("hb-probe-01") and time.time() < deadline:
+                time.sleep(0.1)
+            self.assertIn("probe-line", t.capture("hb-probe-01"))
+        finally:
+            t.kill("hb-probe-01")
+            t._t("kill-server", check=False, capture=True)
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertFalse(t.alive("hb-probe-01"))
+
+
 def fake_judge(target, text, item_id, tier, verdict):
     vulns = (["TOY-1"] if "strcpy" in text else []) + (["TOY-2"] if "format string" in text else [])
     return {"verdict": "match" if vulns else "no_match", "vulns": vulns, "reason": "fake", "cost_usd": 0.01}
@@ -315,13 +368,13 @@ class CampaignBase(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_campaign(self, scripts, judge=fake_judge, b=None):
+    def run_campaign(self, scripts, judge=fake_judge, b=None, launcher=None):
         run_dir = self.work / "runs" / "t"
         run_dir.mkdir(parents=True, exist_ok=True)
         selection = select([self.toy], None)
         write_json(run_dir / "run.json", {"run_id": "t", "plan": {
             "toy": {"strategy": "campaign", "vulns": ["TOY-1", "TOY-2"], "titles": {}}}})
-        launcher = FakeLauncher(scripts)
+        launcher = launcher or FakeLauncher(scripts)
         rc = drive(b or self.b, run_dir, "t", selection, launcher, judge, log=lambda m: None)
         self.assertEqual(rc, 0)
         self.assertEqual(launcher.scripts, [], "unexpected number of instances")
@@ -361,6 +414,16 @@ class CampaignTests(CampaignBase):
         run_dir, s = self.run_campaign(["lead,idle"], b=b)
         self.assertEqual((s["found"], s["vulns"], s["instances"]), (0, 2, 1))
         self.assertEqual(s["instance_results"][0]["status"], "timeout")
+
+    def test_a_tmux_failure_is_recorded_and_never_crashes_the_run(self):
+        launcher = BrokenSendLauncher(["lead,idle"])
+        run_dir, s = self.run_campaign(None, launcher=launcher)
+        r = json.loads((run_dir / "instances/toy__01/result.json").read_text())
+        self.assertEqual(r["status"], "launch_error")
+        self.assertIn("can't find pane", r["error"])
+        self.assertEqual(r["stop_mode"], "kill")
+        self.assertFalse(launcher.alive(r["tmux_session"]))  # the omp session was cleaned up
+        self.assertEqual(s["instances"], 1)  # the campaign stops at an error status
 
     def test_keyword_fallback_without_judge_and_require_confirmed(self):
         b = deep_merge(self.b, {"_cli_budget": {"max_hours": 0.0006}})

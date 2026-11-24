@@ -312,6 +312,10 @@ class HuntInstance:
             status = "interrupted"
             self.interrupted = True
             self.event("interrupted")
+        except Exception as e:  # noqa: BLE001  (a tmux or file error fails this instance, never the run)
+            status = "launch_error"  # an error status: the campaign stops here and --retry-errors re-runs it
+            res["error"] = f"{type(e).__name__}: {e}" + ("" if self.launched is None else " (after /hunt was sent)")
+            self.event(status, error=res["error"])
         res["status"] = status
         end_ts = now()
         self.live("stopping", status)
