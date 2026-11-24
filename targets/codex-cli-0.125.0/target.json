@@ -1,0 +1,10 @@
+{
+  "name": "codex-cli-0.125.0",
+  "targetType": ["source", "binary"],
+  "readOnly": ["vault/context/source", "vault/context/release"],
+  "appendOnly": [],
+  "artifactRoots": ["vault/context/source", "vault/context/release"],
+  "dependencyRoots": ["third_party"],
+  "allowHosts": [],
+  "researchMode": "first-principles"
+}

@@ -1,0 +1,11 @@
+id: toy
+name: Toy C target
+strategy: campaign
+prompt: hunt for an RCE in this project
+budget:
+  max_hours: 0.01
+material:
+  - kind: local
+    path: material/src
+    dest: source
+target_json: target.json

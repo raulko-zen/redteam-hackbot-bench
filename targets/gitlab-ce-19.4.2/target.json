@@ -1,0 +1,10 @@
+{
+  "name": "gitlab-ce-19.4.2",
+  "targetType": ["source", "binary"],
+  "readOnly": ["vault/context/gitlab-ce", "vault/context/package"],
+  "appendOnly": [],
+  "artifactRoots": ["vault/context/gitlab-ce", "vault/context/package"],
+  "dependencyRoots": ["third_party"],
+  "allowHosts": [],
+  "researchMode": "first-principles"
+}
