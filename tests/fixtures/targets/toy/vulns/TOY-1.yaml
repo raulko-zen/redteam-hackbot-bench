@@ -1,0 +1,8 @@
+id: TOY-1
+title: strcpy stack overflow in parse()
+ground_truth: parse() copies its argument with strcpy into an 8-byte stack buffer.
+match:
+  all_of:
+    - ["parse", "toy.c"]
+    - ["strcpy"]
+    - ["overflow", "out-of-bounds"]

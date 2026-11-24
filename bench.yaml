@@ -1,0 +1,60 @@
+# hackbench defaults. Every key can be overridden per vuln (`budget:`) or per run (CLI flags).
+# Paths accept ~ and environment variables.
+
+# The redteam-hackbot clone whose .omp/ every case workspace links to (HACKBENCH_HACKBOT overrides).
+hackbot: ~/projects/redteam-hackbot
+
+# Where runs, workspaces and logs go (HACKBENCH_WORK_ROOT overrides). Keep it OUTSIDE this repository:
+# the hunt's agents have a shell, and the ground truth in targets/*/vulns/ must not be reachable by a
+# relative path from their workspace.
+work_root: ~/hackbench-work
+
+# Downloaded target material, verified by sha256 and reused across runs.
+cache_dir: ~/.cache/hackbench
+
+# What the bench types into omp to start each hunt. {prompt} is the vuln's stored prompt (one line).
+hunt_command: "/hunt --fresh '{prompt}'"
+
+launcher:
+  # auto: the protected hunt host (hackbot-hunt.service tmux) on Linux when installed, else a private tmux.
+  # hunt-host: require the hunt host (what hackbot's /hunt demands on Linux).
+  # tmux: a private tmux server; sets HACKBOT_ALLOW_UNPROTECTED=1 (development / macOS only).
+  mode: auto
+  startup_wait_s: 20      # let the omp TUI come up before typing the /hunt line
+  start_timeout_s: 240    # /hunt must write vault/sessions/.hunt.json within this, or the case is a launch error
+
+omp:
+  args: []                # extra omp flags for the hunt session, e.g. ["--model", "opus"]
+  pass_max_cost: true     # also pass --max-cost=<budget.max_cost_usd> to omp as a hard spend stop
+
+budget:                   # per hunt instance; a target's `budget:` overrides these, --max-hours/--max-cost override both
+  max_hours: 12
+  max_cost_usd: 300
+
+campaign:                 # strategy: campaign (default): fresh instances until every known vuln is found
+  max_misses: 1           # end after this many consecutive instances that prove nothing new
+  max_instances: 0        # hard cap per target (0 = none)
+
+monitor:
+  poll_s: 20
+  stopped_idle_s: 600     # after the hunt marks itself stopped, end the case once spend is flat this long
+
+stop:
+  mode: kill              # kill: end omp at once (no closing turn, saves money) | graceful: STOP file + closing turn
+  graceful_timeout_s: 1800
+  quiesce_s: 60           # keep reading session files after the stop; any spend here is reported as post_stop_cost
+  kill_workspace_procs: true   # Linux: kill leftover processes whose cwd is inside the case workspace
+  cleanup_containers: true     # remove Docker containers that appeared during the case
+
+detection:
+  accept_tiers: [finding, gadget]   # hackbot tiers that count as "found" (both are validator-proven with receipts)
+  require_confirmed: false          # true: only items with a "VALID (CONFIRMED)" second validation count
+
+judge:
+  enabled: true           # LLM judge names which known vuln(s) of the target a VALID item proves; keywords are the fallback
+  model: sonnet           # omp --model pattern
+  timeout_s: 300
+  count_partial: false    # count a "partial" verdict (same root cause, incomplete) as found
+
+keep_workspaces: true     # false: delete each instance workspace after copying its sessions/, reports/ and recon/
+keep_material: false      # false: delete the extracted material after each hunt (rebuilt from the cache; GitLab is ~4 GB)

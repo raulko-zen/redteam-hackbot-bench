@@ -1,0 +1,7 @@
+id: TOY-2
+title: format string in parse()
+ground_truth: parse() passes its argument to printf as the format.
+match:
+  all_of:
+    - ["printf"]
+    - ["format string"]

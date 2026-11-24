@@ -1,0 +1,1 @@
+{"name": "toy", "targetType": "source", "readOnly": ["vault/context/source"], "artifactRoots": ["vault/context/source"], "dependencyRoots": ["third_party"], "allowHosts": [], "researchMode": "first-principles"}
