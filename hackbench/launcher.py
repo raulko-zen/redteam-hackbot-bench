@@ -76,7 +76,20 @@ class TmuxLauncher:
 
     # ---- tmux plumbing ----------------------------------------------------------------------------
     def _t(self, *args: str, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
-        return subprocess.run([self.tmux, "-S", self.socket, *args], check=check, capture_output=capture, text=True)
+        # Output is always captured (capture is kept for callers' readability).
+        try:
+            r = subprocess.run([self.tmux, "-S", self.socket, *args], capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            r = subprocess.CompletedProcess(args, 124, "", "timed out after 60s")
+        if check and r.returncode != 0:  # carry tmux's own reason into result.json
+            raise LaunchError(f"tmux {args[0]} failed ({r.returncode}): {(r.stderr or r.stdout).strip()}")
+        return r
+
+    @staticmethod
+    def _pane(name: str) -> str:
+        # A pane target needs the colon: tmux (3.6) looks a bare "=name" up as a pane, not a session, and
+        # send-keys then fails with "can't find pane" while display-message and capture-pane print nothing.
+        return f"={name}:"
 
     def _env_args(self, env: dict) -> list[str]:
         out = []
@@ -100,19 +113,19 @@ class TmuxLauncher:
         return r.returncode == 0
 
     def pane_dead(self, name: str) -> bool:
-        r = self._t("display-message", "-p", "-t", f"={name}", "#{pane_dead}", check=False, capture=True)
+        r = self._t("display-message", "-p", "-t", self._pane(name), "#{pane_dead}", check=False, capture=True)
         return r.returncode != 0 or r.stdout.strip() == "1"
 
     def send_line(self, name: str, text: str) -> None:
-        self._t("send-keys", "-t", f"={name}", "-l", "--", text)
+        self._t("send-keys", "-t", self._pane(name), "-l", "--", text)
         time.sleep(1.0)
-        self._t("send-keys", "-t", f"={name}", "Enter")
+        self._t("send-keys", "-t", self._pane(name), "Enter")
 
     def send_enter(self, name: str) -> None:
-        self._t("send-keys", "-t", f"={name}", "Enter", check=False)
+        self._t("send-keys", "-t", self._pane(name), "Enter", check=False)
 
     def capture(self, name: str, lines: int = 3000) -> str:
-        r = self._t("capture-pane", "-p", "-J", "-t", f"={name}", "-S", f"-{lines}", check=False, capture=True)
+        r = self._t("capture-pane", "-p", "-J", "-t", self._pane(name), "-S", f"-{lines}", check=False, capture=True)
         return r.stdout if r.returncode == 0 else ""
 
     def kill(self, name: str) -> None:
