@@ -1,18 +1,41 @@
 """Drive every selected target: one hunt instance at a time until each target's plan is exhausted."""
 from __future__ import annotations
 
-from datetime import datetime
+import os
+import platform
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Target, Vuln, deep_merge
 from .material import fetch
 from .report import ERROR_STATUSES, load_instances, summarize
-from .runner import HuntInstance, fmt_dur, plan_next
+from .runner import HuntInstance, fmt_dur, plan_next, write_json
+
+
+def _state(run_dir: Path, state: str, current: str | None, started: str) -> None:
+    """run_dir/state.json: is the bench driving this run right now, and which instance (for `hackbench serve`)."""
+    try:
+        write_json(run_dir / "state.json", {
+            "state": state, "current": current, "pid": os.getpid(), "host": platform.node(),
+            "started_at": started, "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    except OSError:
+        pass
 
 
 def drive(b: dict, run_dir: Path, run_id: str, selection: list[tuple[Target, list[Vuln]]], launcher, judge,
           log=print, omp: str = "omp", retry_errors: bool = False) -> int:
     """Returns 0 when every target ran to its end, 130 on interrupt, 2 on a material failure."""
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    _state(run_dir, "running", None, started)
+    rc = 1
+    try:
+        rc = _drive(b, run_dir, run_id, selection, launcher, judge, log, omp, retry_errors, started)
+        return rc
+    finally:
+        _state(run_dir, {0: "done", 130: "interrupted"}.get(rc, "stopped"), None, started)
+
+
+def _drive(b, run_dir, run_id, selection, launcher, judge, log, omp, retry_errors, started) -> int:
     for t, vs in selection:
         retried = False
         while True:
@@ -41,6 +64,7 @@ def drive(b: dict, run_dir: Path, run_id: str, selection: list[tuple[Target, lis
             except Exception as e:  # noqa: BLE001
                 log(f"  material unavailable: {e}")
                 return 2
+            _state(run_dir, "running", f"{t.id}#{index:02d}", started)
             inst = HuntInstance(b, run_dir, run_id, t, index, stop_vulns, prompt,
                                 deep_merge(budget, b.get("_cli_budget")), launcher, judge, log=log, omp=omp)
             res = inst.run()

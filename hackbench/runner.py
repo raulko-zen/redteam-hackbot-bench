@@ -7,6 +7,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +72,21 @@ def build_workspace(target: Target, ws: Path, hackbot: Path, cache: Path, vault_
     # No CONTEXT.md on purpose: /hunt then runs the full /recon pass first and hands off to the hunt.
     if (ctx / "CONTEXT.md").exists():
         raise RuntimeError("material placed a CONTEXT.md in vault/context/: /hunt would skip recon")
+
+
+def hackbot_dashboard_url(ws: Path) -> str | None:
+    """Where hackbot's own dashboard for this workspace is served (.omp/hooks/lib/dashboard.ts): the pinned
+    PI_DASHBOARD_PORT omp inherits from the bench, else the port remembered for the workspace's real path in
+    <tmpdir>/omp-dashboard-ports.json. None until hackbot has started one. Never reads the pairing token."""
+    pinned = os.environ.get("PI_DASHBOARD_PORT", "")
+    if pinned.isdigit() and int(pinned) > 0:
+        return f"http://127.0.0.1:{int(pinned)}"
+    try:
+        ports = json.loads((Path(tempfile.gettempdir()) / "omp-dashboard-ports.json").read_text())
+        port = ports.get(os.path.realpath(ws))
+    except (OSError, ValueError, AttributeError):
+        return None
+    return f"http://127.0.0.1:{port}" if isinstance(port, int) and port > 0 else None
 
 
 def read_hunt_state(ws: Path) -> dict | None:
@@ -164,6 +180,33 @@ class HuntInstance:
         self.judge_cost = 0.0
         self.interrupted = False
         self.launched: float | None = None
+        self.hunt_state: dict = {}
+        self.recon_s: float | None = None
+        self.item_counts: dict = {}
+        self.started = now()
+
+    def live(self, state: str, status: str | None = None) -> None:
+        """Write live.json: what `hackbench serve` shows for this instance while it runs (and after)."""
+        try:
+            st = self.hunt_state
+            L = self.launched
+            write_json(self.dir / "live.json", {
+                "instance": self.id, "target": self.target.id, "index": self.index, "stop_set": self.stop_ids,
+                "state": state, "status": status, "updated_at": iso(now()), "started_at": iso(self.started),
+                "launched_at": iso(L), "elapsed_s": round(now() - L, 1) if L else None,
+                "phase": "recon" if st.get("phase") == "recon" else ("hunt" if st else None), "recon_s": self.recon_s,
+                "iteration": st.get("iteration"), "hunt_dir": st.get("dir"),
+                "budget": self.budget, "spent_usd": self.cost.total(), "judge_cost_usd": round(self.judge_cost, 6),
+                "items": self.item_counts,
+                "found": [{"vuln": v, "item": f["id"], "tier": f["tier"], "in_stop_set": v in self.stop_ids,
+                           "time_to_find_s": round(f["ts"] - L, 1) if L else None,
+                           "cost_to_find_usd": self.cost.total(until=f["ts"])}
+                          for v, f in sorted(self.found.items(), key=lambda kv: kv[1]["ts"])],
+                "keyword_hits": sorted(self.keyword_hits), "tmux_session": self.name, "workspace": str(self.ws),
+                "hackbot_dashboard": hackbot_dashboard_url(self.ws) if st else None,
+            })
+        except Exception:  # noqa: BLE001  (a monitoring write must never break a hunt)
+            pass
 
     def event(self, kind: str, **kw) -> None:
         e = {"t": iso(now()), "event": kind, **kw}
@@ -239,6 +282,7 @@ class HuntInstance:
             "workspace": str(self.ws), "tmux_session": self.name,
         }
         t_setup = now()
+        self.live("setup")
         try:
             build_workspace(self.target, self.ws, Path(self.b["hackbot"]), Path(self.b["cache_dir"]), self.vault_name, self.log)
         except Exception as e:  # noqa: BLE001
@@ -260,6 +304,7 @@ class HuntInstance:
             self.event("launch_error", error=res["error"])
             return self._finish(res)
         self.event("omp_started", argv=argv)
+        self.live("starting")
 
         try:
             status = self._drive(res)
@@ -269,6 +314,7 @@ class HuntInstance:
             self.event("interrupted")
         res["status"] = status
         end_ts = now()
+        self.live("stopping", status)
         stop_info = self._stop(status)
 
         # ---- metrics ----
@@ -353,12 +399,18 @@ class HuntInstance:
                 # The recon → hunt hand-off rewrites .hunt.json without `phase`, with the hunt's own `started`.
                 hunt_seen = True
                 hs = parse_iso(st.get("started")) or t
-                res["recon_s"] = round(max(0.0, hs - launched), 1) if recon_seen else 0.0
+                res["recon_s"] = self.recon_s = round(max(0.0, hs - launched), 1) if recon_seen else 0.0
                 self.event("hunt_started", started=st.get("started"), recon_s=res["recon_s"])
             self.cost.scan()
             spent = self.cost.total()
+            self.hunt_state = st
             sess = self.ws / st["dir"] if st.get("dir") else None
-            if sess and sess.exists() and self.evaluate(scan_items(sess)):
+            items = scan_items(sess) if sess and sess.exists() else []
+            self.item_counts = {k: sum(1 for i in items if i.tier == k) for k in ("finding", "gadget", "lead", "rejected")}
+            self.item_counts["valid"] = sum(1 for i in items if i.valid and i.tier in ("finding", "gadget"))
+            hit = bool(items) and self.evaluate(items)
+            self.live(st.get("phase") or "hunt")
+            if hit:
                 return "found"
             if t - last_log >= 600:
                 last_log = t
@@ -432,36 +484,54 @@ class HuntInstance:
             res["workspace"] = None
             res["kept"] = str(keep)
         write_json(self.dir / "result.json", res)
+        self.live("ended", res.get("status"))
         return res
 
 
 # ---- campaigns ------------------------------------------------------------------------------------
-def plan_next(target: Target, selected: list[Vuln], done: list[dict], bench: dict) -> tuple[list[Vuln], str, dict] | None:
-    """The next instance for a target given its finished instances, or None when the target is done.
+SCORE_EXCLUDED = ("setup_error", "launch_error", "interrupted")
+
+
+def next_stop_ids(strategy: str, vuln_ids: list[str], done: list[dict], max_misses: int = 1,
+                  max_instances: int = 0) -> list[str] | None:
+    """The stop set of the next instance, or None when the target is done. Pure: ids and result dicts only.
 
     campaign: stop set = selected vulns no instance has proven yet; ends when all are found, after
       `max_misses` consecutive instances that prove nothing new, or after `max_instances` (0 = no cap).
     per-vuln: one instance per selected vuln, in order.
+    Instances that ended in a setup/launch error or an interrupt do not count.
     """
-    scored = [r for r in done if r.get("status") not in ("setup_error", "launch_error", "interrupted")]
-    if target.strategy == "per-vuln":
+    scored = [r for r in done if r.get("status") not in SCORE_EXCLUDED]
+    if strategy == "per-vuln":
         tried = {tuple(r.get("stop_set") or []) for r in scored}
-        for v in selected:
-            if (v.id,) not in tried:
-                return [v], v.prompt, v.budget(bench)
-        return None
-    cfg = target.campaign(bench)
+        return next(([v] for v in vuln_ids if (v,) not in tried), None)
     found = {f["vuln"] for r in scored for f in r.get("found", []) if f.get("in_stop_set")}
-    remaining = [v for v in selected if v.id not in found]
-    if not remaining:
+    remaining = [v for v in vuln_ids if v not in found]
+    if not remaining or trailing_misses(done) >= max(1, int(max_misses or 1)):
         return None
+    if max_instances and len(scored) >= int(max_instances):
+        return None
+    return remaining
+
+
+def trailing_misses(done: list[dict]) -> int:
+    """Consecutive scored instances, newest first, that proved nothing new."""
     misses = 0
-    for r in reversed(scored):
+    for r in reversed([r for r in done if r.get("status") not in SCORE_EXCLUDED]):
         if any(f.get("in_stop_set") for f in r.get("found", [])):
             break
         misses += 1
-    if misses >= int(cfg.get("max_misses") or 1):
+    return misses
+
+
+def plan_next(target: Target, selected: list[Vuln], done: list[dict], bench: dict) -> tuple[list[Vuln], str, dict] | None:
+    """The next instance for a target given its finished instances, or None when the target is done."""
+    cfg = target.campaign(bench)
+    ids = next_stop_ids(target.strategy, [v.id for v in selected], done,
+                        int(cfg.get("max_misses") or 1), int(cfg.get("max_instances") or 0))
+    if ids is None:
         return None
-    if cfg.get("max_instances") and len(scored) >= int(cfg["max_instances"]):
-        return None
-    return remaining, target.prompt, target.budget(bench)
+    vs = [v for v in selected if v.id in ids]
+    if target.strategy == "per-vuln":
+        return vs, vs[0].prompt, vs[0].budget(bench)
+    return vs, target.prompt, target.budget(bench)

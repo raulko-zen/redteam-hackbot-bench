@@ -48,7 +48,10 @@ how long that took, and what it cost. `README.md` is the operator guide. Keep it
   - `items.py`: hackbot item files.
   - `match.py`: keywords and the LLM judge.
   - `launcher.py`: tmux / hunt host.
-  - `report.py`: `summary.md` and `summary.json`.
+  - `report.py`: `summary.md` and `summary.json` (`build_summary` is pure; the dashboard reuses it).
+  - `serve.py` + `dashboard/index.html`: `hackbench serve`, the live read-only dashboard. The page uses
+    redteam-hackbot's dashboard tokens and components (`.omp/dashboard/index.html`); keep them in sync,
+    and add no other colors or fonts.
   - `cli.py`: the CLI.
 - `targets/<id>/`: `target.yaml` (strategy, prompt, budget, `os`, pinned per-arch `material`),
   `target.json` (copied verbatim into the workspace), and `vulns/<id>.yaml` (ground truth).
@@ -98,6 +101,9 @@ A real run needs the Linux VM (`ssh raul@parallels-linux`): omp, tmux, the hackb
 - **Platform scope is explicit.** A vuln that only exists on another OS gets `os: [<os>]`. It is listed
   but not scored against a target with a different `os:` (default `linux`). Example: Codex's PowerShell
   `--%` bug is Windows-only.
+- **The dashboard never leaks ground truth to a hunt.** Hunts share the host and reach loopback, so
+  every `/api/*` route except `/api/health` requires the in-memory bearer token. Never write the token to
+  disk, argv, env or logs, never serve data from `/` itself, and keep the server read-only.
 - **The judge is an Opus 5.5-grade model.** `judge.model` defaults to `anthropic/claude-opus-5-5` with
   `thinking: high`. Do not lower it to save cost: the judge alone decides what counts as found.
 - **Spend is measured from omp's own records.** Cost comes from `usage.cost.total` on every assistant

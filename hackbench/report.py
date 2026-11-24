@@ -60,9 +60,10 @@ def vuln_results(plan: dict, instances: list[dict]) -> list[dict]:
     return rows
 
 
-def summarize(run_dir: Path) -> dict:
+def build_summary(run_dir: Path, instances: list[dict] | None = None) -> dict:
+    """The run's summary as data (no files written). `instances` defaults to the finished ones on disk."""
     meta = json.loads((run_dir / "run.json").read_text()) if (run_dir / "run.json").exists() else {}
-    instances = load_instances(run_dir)
+    instances = load_instances(run_dir) if instances is None else instances
     plan = meta.get("plan") or {}
     rows = vuln_results(plan, instances)
     found = [r for r in rows if r["found"]]
@@ -86,7 +87,8 @@ def summarize(run_dir: Path) -> dict:
         "instance_results": [
             {k: r.get(k) for k in ("instance", "status", "stop_set", "wall_s", "recon_s", "total_cost_usd",
                                    "post_stop_cost_usd", "error")}
-            | {"found": [f["vuln"] for f in r.get("found", [])],
+            | {"found": [f["vuln"] for f in r.get("found", []) if f.get("in_stop_set", True)],
+               "refound": [f["vuln"] for f in r.get("found", []) if not f.get("in_stop_set", True)],
                "other_valid_items": [i["id"] for i in r.get("items", [])
                                      if i["tier"] in ("finding", "gadget") and i["verdict"].upper().startswith("VALID")
                                      and i["id"] not in {f["item"] for f in r.get("found", [])}]}
@@ -98,6 +100,12 @@ def summarize(run_dir: Path) -> dict:
         tinst = [r for r in instances if r.get("target") == tid]
         s["by_target"][tid] = {"vulns": len(trows), "found": sum(r["found"] for r in trows), "instances": len(tinst),
                                "cost_usd": round(sum(r.get("total_cost_usd") or 0 for r in tinst), 4)}
+    return s
+
+
+def summarize(run_dir: Path) -> dict:
+    """Build the summary and write summary.json / summary.md."""
+    s = build_summary(run_dir)
     write_json(run_dir / "summary.json", s)
     (run_dir / "summary.md").write_text(render_md(s))
     return s

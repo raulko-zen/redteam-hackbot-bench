@@ -178,7 +178,8 @@ def cmd_run(args) -> int:
         return 2
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_dir = work / "runs" / run_id
-    plan = {t.id: {"strategy": t.strategy, "vulns": [v.id for v in vs], "titles": {v.id: v.title for v in vs}}
+    plan = {t.id: {"strategy": t.strategy, "name": t.name, "vulns": [v.id for v in vs],
+                   "titles": {v.id: v.title for v in vs}, "budget": _budget(b, t.budget(b)), "campaign": t.campaign(b)}
             for t, vs in selection}
 
     if args.dry_run:
@@ -244,6 +245,19 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    from .serve import serve
+    b = _bench(args)
+    runs = Path(b["work_root"]) / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    try:
+        serve(runs, host=args.host, port=args.port, auth=not args.no_auth, log=lambda m: print(m, flush=True))
+    except OSError as e:
+        print(f"error: cannot listen on {args.host}:{args.port}: {e}")
+        return 2
+    return 0
+
+
 def cmd_report(args) -> int:
     b = _bench(args)
     run_dir = Path(args.run) if ("/" in args.run or Path(args.run).exists()) else Path(b["work_root"]) / "runs" / args.run
@@ -280,6 +294,11 @@ def main(argv=None) -> int:
                         help="target or target/vuln glob to skip (repeatable); added to bench.yaml targets.exclude")
     rp = sub.add_parser("report", help="(re)build summary.md / summary.json for a run")
     rp.add_argument("run", help="run id or run directory")
+    sv = sub.add_parser("serve", help="live dashboard over work_root/runs (read-only, token-protected, loopback)")
+    sv.add_argument("--host", default="127.0.0.1", help="listen address (default 127.0.0.1)")
+    sv.add_argument("--port", type=int, default=8765, help="listen port (default 8765; 0 = any free port)")
+    sv.add_argument("--no-auth", action="store_true",
+                    help="serve without the access token (hunts on this host could then read ground truth)")
     args = p.parse_args(argv)
     return {"list": cmd_list, "lint": cmd_lint, "fetch": cmd_fetch, "check": cmd_check, "run": cmd_run,
-            "report": cmd_report}[args.cmd](args)
+            "report": cmd_report, "serve": cmd_serve}[args.cmd](args)

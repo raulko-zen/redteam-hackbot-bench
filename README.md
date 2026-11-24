@@ -105,9 +105,49 @@ bin/hackbench run --exclude 'codex-cli-0.125.0/ZDI-26-305'   # skip one vuln for
 bin/hackbench run --run-id <id>                   # resume: continues each campaign where it stopped
 bin/hackbench run --run-id <id> --retry-errors    # also re-run an instance that hit a setup/launch error or Ctrl-C
 bin/hackbench report <id>                         # rebuild summary.md / summary.json
+bin/hackbench serve                               # live dashboard (prints its URL with the access token)
 ```
 
-To watch a hunt, attach to its pane: `tmux -S $XDG_RUNTIME_DIR/hackbot.tmux attach -t hb-<run>-<target>-NN`.
+## Dashboard
+
+`bin/hackbench serve` (default `127.0.0.1:8765`; `--port`, `--host`) serves a live, read-only view of
+every run under `work_root/runs`, in redteam-hackbot's dashboard design. It refreshes every 5 s, and the
+run selector switches between runs. Run it in its own terminal in the VM next to `hackbench run`, or after
+the run, to browse results.
+
+- **Overview** (the counter strip):
+  - vulns found out of selected, with %;
+  - targets done and hunting;
+  - hunt spend, with judge spend separate;
+  - hunt instances, with how many are running or errored;
+  - wall time;
+  - median time and median cost to find.
+- **Targets:** one collapsible row per target: status, found meter, spend, and the active hunt (instance,
+  phase, elapsed, spend) when one runs. Click a row to expand it, and the open rows stay open across refreshes.
+  An expanded row lists each vuln as found / hunting / pending / missed, with the proving item, instance,
+  time, cost and first mention, followed by the target's table of hunt instances.
+- **Current hunt:** the running instance's phase and iteration, and its time and spend against the
+  instance limits (meters turn amber at 75% and red at 90%). It also shows item counts, the vulns it
+  proved, a link to that hunt's own hackbot dashboard, and the tmux attach command and workspace path,
+  each with a copy button.
+- **Activity:** the live event feed across instances: items, keyword hits, judge verdicts, finds,
+  phases, stops and errors.
+
+It reads only the files the bench writes: `run.json`, `state.json` (the bench's pid and current instance),
+`instances/*/live.json` (each instance's snapshot, rewritten every poll), and `result.json` and
+`events.jsonl`. A run whose bench process is gone shows as "bench not running", and its hunt as stale.
+
+**Access token.** Hunts run on the same host and can reach loopback, and the API returns ground truth
+(vuln titles, judge reasons). So every `/api/*` call needs the random token that `serve` prints in its URL
+(`#token=…`). The token lives only in the server's memory, the URL fragment never leaves the browser, and
+a restart issues a new token. `--no-auth` turns this off, and you should not use it while hunts run on
+this host.
+
+From the Mac: `ssh -L 8765:127.0.0.1:8765 raul@parallels-linux`, then open the printed URL. To follow the
+"hackbot dashboard" link, forward that port too, or export `PI_DASHBOARD_PORT=1234` before
+`hackbench run` so every hunt uses one port.
+
+To watch a hunt to its pane: `tmux -S $XDG_RUNTIME_DIR/hackbot.tmux attach -t hb-<run>-<target>-NN`.
 Detach with the tmux prefix then `d`; do not quit omp. Ctrl-C on the bench stops the current hunt,
 records it and exits.
 
@@ -143,20 +183,20 @@ A target's `budget:` and `campaign:` override them, and `--max-hours` / `--max-c
 
 ```
 bench.yaml                          defaults
-hackbench/                          runner (stdlib + PyYAML)
+hackbench/                          runner (stdlib + PyYAML); hackbench/dashboard/index.html is the `serve` page
 targets/<t>/target.yaml             strategy, prompt, budget, material (per-arch; tarball | file | deb | git | local)
 targets/<t>/target.json             copied verbatim to vault/context/target.json
 targets/<t>/vulns/<id>.yaml         ground truth (never enters a workspace): ground_truth, not_this, match
-tests/                              unit tests + end-to-end campaigns against a fake hunt
+tests/                              unit tests + end-to-end campaigns against a fake hunt, dashboard API tests
 ```
 
 Run output:
 
 ```
 <work_root>/runs/<run>/
-  run.json  hackbot-config.yml  summary.md  summary.json
+  run.json  state.json  hackbot-config.yml  summary.md  summary.json
   instances/<target>__NN/
-    result.json  events.jsonl  pane.txt  setup.log
+    live.json  result.json  events.jsonl  pane.txt  setup.log
     omp-sessions/      every omp session file of the hunt (the cost source)
     workspace/         the hackbot workspace (vault/sessions/NN-*/ holds the hunt's items and reports)
 ```

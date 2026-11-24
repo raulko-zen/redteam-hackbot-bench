@@ -297,7 +297,9 @@ def fake_judge(target, text, item_id, tier, verdict):
     return {"verdict": "match" if vulns else "no_match", "vulns": vulns, "reason": "fake", "cost_usd": 0.01}
 
 
-class CampaignTests(unittest.TestCase):
+class CampaignBase(unittest.TestCase):
+    """A toy target, a fake hackbot and a fake launcher for end-to-end runs."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.work = Path(self.tmp.name)
@@ -325,6 +327,8 @@ class CampaignTests(unittest.TestCase):
         self.assertEqual(launcher.scripts, [], "unexpected number of instances")
         return run_dir, summarize(run_dir)
 
+
+class CampaignTests(CampaignBase):
     def test_campaign_finds_one_vuln_per_instance_and_moves_on(self):
         # instance 1 proves TOY-1; instance 2 re-proves TOY-1 (already known: keeps going), then proves TOY-2
         run_dir, s = self.run_campaign(["lead,find1,idle", "find1,find2,idle"])
@@ -367,6 +371,100 @@ class CampaignTests(unittest.TestCase):
             del self.toy.data["detection"]
         self.assertEqual(s["found"], 0)  # FIND-001 is VALID but never CONFIRMED
         self.assertEqual(s["vuln_results"][0]["first_mention"]["item"], "FIND-001")
+
+
+class ServeTests(CampaignBase):
+    """`hackbench serve` over a real (fake-hunt) run directory."""
+
+    def start_server(self, token="t0k3n"):
+        import threading
+        from http.server import ThreadingHTTPServer
+        from hackbench.serve import make_handler
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.work / "runs", token))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    def get(self, url, token=None, method="GET"):
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(url, method=method, headers={"Authorization": f"Bearer {token}"} if token else {})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                body = r.read()
+                return r.status, (json.loads(body) if r.headers.get_content_type() == "application/json" else body)
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+
+    def test_finished_run_snapshot_and_token(self):
+        run_dir, _ = self.run_campaign(["lead,find1,idle", "find1,find2,idle"])
+        # the bench wrote run state and per-instance live snapshots
+        self.assertEqual(json.loads((run_dir / "state.json").read_text())["state"], "done")
+        lv = json.loads((run_dir / "instances/toy__02/live.json").read_text())
+        self.assertEqual((lv["state"], lv["status"]), ("ended", "found"))
+        self.assertEqual([f["vuln"] for f in lv["found"] if f["in_stop_set"]], ["TOY-2"])
+
+        base = self.start_server()
+        code, page = self.get(base + "/")
+        self.assertEqual(code, 200)
+        self.assertIn(b"hackbench", page)
+        self.assertNotIn(b"TOY-", page)                                   # the page holds no data
+        self.assertEqual(self.get(base + "/api/health")[1]["app"], "hackbench")
+        self.assertEqual(self.get(base + "/api/runs")[0], 401)           # no token
+        self.assertEqual(self.get(base + "/api/runs", "wrong")[0], 401)  # wrong token
+        self.assertEqual(self.get(base + "/api/run/t", "t0k3n", method="POST")[0], 405)
+        for bad in ("..%2F..%2Fetc", "nope", ".hidden"):
+            self.assertEqual(self.get(base + "/api/run/" + bad, "t0k3n")[0], 404)
+
+        code, runs = self.get(base + "/api/runs", "t0k3n")
+        self.assertEqual((code, [r["run_id"] for r in runs["runs"]]), (200, ["t"]))
+        code, s = self.get(base + "/api/run/t", "t0k3n")
+        self.assertEqual(code, 200)
+        o = s["overview"]
+        self.assertEqual((o["found"], o["vulns"], o["found_pct"], o["instances"], o["instances_running"]), (2, 2, 100.0, 2, 0))
+        self.assertEqual((o["targets"], o["targets_done"]), (1, 1))
+        self.assertGreater(o["hunt_cost_usd"], 0)
+        (t,) = s["targets"]
+        self.assertEqual((t["id"], t["status"]), ("toy", "done"))
+        self.assertEqual({v["vuln"]: v["instance"] for v in t["vulns"]}, {"TOY-1": "toy#01", "TOY-2": "toy#02"})
+        kinds = {e["event"] for e in s["events"]}
+        self.assertTrue({"found", "judged", "hunt_started", "stopped"} <= kinds)
+        self.assertTrue(all("argv" not in e for e in s["events"]))
+        self.assertEqual(s["running"], [])
+
+    def test_mid_run_snapshot_counts_the_running_hunt(self):
+        run_dir, _ = self.run_campaign(["lead,find1,idle", "find1,find2,idle"])
+        # rewind to "instance 02 is running": no result.json yet, a fresh live.json, the bench alive
+        (run_dir / "instances/toy__02/result.json").unlink()
+        lv = json.loads((run_dir / "instances/toy__02/live.json").read_text())
+        lv.update(state="hunt", status=None, phase="hunt", iteration=3, elapsed_s=1800, spent_usd=10.0,
+                  updated_at=datetime.now().astimezone().isoformat(), found=[])
+        write_json(run_dir / "instances/toy__02/live.json", lv)
+        write_json(run_dir / "state.json", {"state": "running", "current": "toy#02", "pid": os.getpid(),
+                                            "host": __import__("platform").node()})
+        meta = json.loads((run_dir / "run.json").read_text())
+        meta["plan"]["toy"].update(budget={"max_hours": 2, "max_cost_usd": 100}, campaign={"max_misses": 1})
+        write_json(run_dir / "run.json", meta)
+
+        from hackbench.serve import run_snapshot
+        s = run_snapshot(run_dir)
+        o = s["overview"]
+        self.assertEqual((o["found"], o["instances"], o["instances_running"], o["targets_running"]), (1, 2, 1, 1))
+        (h,) = s["running"]
+        self.assertEqual((h["instance"], h["stale"], h["stop_set"]), ("toy#02", False, ["TOY-2"]))
+        self.assertNotIn("worst_case_left", o)
+        self.assertEqual(s["targets"][0]["active"]["instance"], "toy#02")  # the collapsed row names the active hunt
+        rows = {v["vuln"]: v for v in s["targets"][0]["vulns"]}
+        self.assertTrue(rows["TOY-2"]["hunting"])
+        self.assertFalse(rows["TOY-1"]["hunting"])
+
+        # the bench process vanished: the run reads "stopped" and the hunt "stale"
+        write_json(run_dir / "state.json", {"state": "running", "pid": 2 ** 22 + 12345, "host": __import__("platform").node()})
+        s = run_snapshot(run_dir)
+        self.assertEqual(s["state"]["state"], "stopped")
+        self.assertTrue(s["running"][0]["stale"])
+        self.assertEqual(s["overview"]["instances_running"], 0)
 
 
 if __name__ == "__main__":

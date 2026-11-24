@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>hackbench · benchmark monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  /* Zenity Labs theme: the same tokens and components as redteam-hackbot's .omp/dashboard/index.html. */
+  :root {
+    --bg:          hsl(247 90% 4%);
+    --bg-raise:    hsl(248 55% 8%);
+    --bg-code:     hsl(250 50% 6%);
+    --fg:          hsl(270 100% 99%);
+    --fg-muted:    hsl(270.7 36.9% 78.2%);
+    --fg-dim:      hsl(270 18% 60%);
+    --primary:     hsl(350 100% 64%);
+    --secondary:   hsl(267 89% 55%);
+    --accent:      hsl(171 78% 49%);
+    --stroke:      hsl(257 69% 23%);
+    --post-stroke: hsl(256 76% 16%);
+    --red-300:     hsl(350 100% 78%);
+    --gadget:      hsl(42 95% 60%);
+    --radius: 14px;
+    --sans: "Space Grotesk", system-ui, -apple-system, Segoe UI, sans-serif;
+    --body: "Inter", system-ui, -apple-system, Segoe UI, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    background-image:
+      radial-gradient(1100px 600px at 82% -8%, hsl(267 89% 55% / 0.20), transparent 60%),
+      radial-gradient(900px 520px at 0% 2%, hsl(350 100% 64% / 0.10), transparent 55%),
+      radial-gradient(700px 700px at 50% 120%, hsl(171 78% 49% / 0.07), transparent 60%);
+    background-attachment: fixed;
+    color: var(--fg); font-family: var(--body); font-size: 14px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--red-300); text-decoration: none; }
+  a:hover { color: var(--primary); }
+  ::selection { background: hsl(350 100% 64% / 0.35); color: #fff; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--stroke); border-radius: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  code { font-family: var(--mono); font-size: 11.5px; color: hsl(260 40% 86%); background: var(--bg-code);
+    border: 1px solid var(--post-stroke); border-radius: 6px; padding: 1px 6px; word-break: break-all; }
+
+  .app { display: grid; grid-template-rows: auto auto 1fr; grid-template-columns: minmax(0, 1fr); height: 100vh; }
+
+  /* ---- header ---- */
+  header.site { display: flex; align-items: center; gap: 12px; padding: 14px 22px;
+    border-bottom: 1px solid var(--stroke); font-family: var(--sans);
+    background: hsl(248 55% 8% / 0.55); backdrop-filter: blur(8px); flex-wrap: wrap; }
+  header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--primary);
+    box-shadow: 0 0 14px 2px hsl(350 100% 64% / 0.7); }
+  header .brand { font-weight: 700; letter-spacing: .3px; }
+  header .crumb { color: var(--fg-dim); font-size: 13px; }
+  header .title { color: var(--fg-muted); font-size: 13px; margin-left: 4px; max-width: 40vw;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .spacer { flex: 1; }
+  header select { font-family: var(--body); font-size: 12px; color: var(--fg-muted); background: var(--bg-code);
+    border: 1px solid var(--post-stroke); border-radius: 8px; padding: 4px 8px; max-width: 260px; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-family: var(--sans);
+    color: var(--fg-muted); border: 1px solid var(--post-stroke); border-radius: 999px; padding: 4px 11px; white-space: nowrap; }
+  .pill .ind { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-dim); flex: none; }
+  .pill.live .ind { background: var(--accent); box-shadow: 0 0 8px 1px hsl(171 78% 49% / .8);
+    animation: pulse 1.6s ease-in-out infinite; }
+  .pill.ended .ind { background: var(--primary); }
+  .pill.stale .ind { background: var(--red-300); }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+  .updated { font-size: 11.5px; color: var(--fg-dim); font-family: var(--sans); }
+
+  /* ---- overview counters (KPI row) ---- */
+  /* hairlines per tile (not gap + stroke background), so an incomplete last row ends in plain surface */
+  .counters { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    background: var(--bg-raise); border-bottom: 1px solid var(--stroke); overflow: hidden; }
+  .counter { background: var(--bg-raise); padding: 13px 18px; min-width: 0;
+    box-shadow: 1px 0 0 var(--stroke), 0 1px 0 var(--stroke); }
+  .counter .k { font-family: var(--sans); font-size: 11px; letter-spacing: .9px; text-transform: uppercase; color: var(--accent); }
+  .counter .v { font-family: var(--sans); font-weight: 700; font-size: 26px; margin-top: 3px;
+    font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .counter .v small { font-size: 15px; color: var(--fg-dim); font-weight: 500; }
+  .counter .sub { font-size: 11.5px; color: var(--fg-dim); margin-top: 1px; }
+  .counter.hero .v { font-size: 34px; color: var(--primary); }
+  .counter.cost .v { color: var(--red-300); }
+
+  /* ---- main columns ---- */
+  main { display: grid; grid-template-columns: minmax(0,1.7fr) minmax(340px, 1fr); min-height: 0; }
+  main > section { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--stroke); }
+  main > aside { min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+  .scroll { overflow-y: auto; flex: 1; padding-bottom: 40px; }
+  .colhead { display: flex; align-items: center; gap: 10px; padding: 11px 18px; border-bottom: 1px solid var(--stroke);
+    font-family: var(--sans); font-size: 12px; letter-spacing: .7px; text-transform: uppercase; color: var(--fg-dim);
+    position: sticky; top: 0; background: var(--bg); z-index: 2; }
+  .colhead .count { color: var(--accent); }
+  .colhead .spacer { flex: 1; }
+
+  /* ---- badges (hackbot's) ---- */
+  .badge { font-family: var(--sans); font-size: 10px; letter-spacing: .4px; text-transform: uppercase;
+    padding: 1px 7px; border-radius: 999px; border: 1px solid var(--post-stroke); color: var(--fg-dim); white-space: nowrap; }
+  .badge.kind-finding { color: var(--primary); border-color: hsl(350 100% 64% / .5); }
+  .badge.kind-gadget { color: var(--gadget); border-color: hsl(42 95% 60% / .45); }
+  .badge.kind-lead { color: var(--accent); border-color: hsl(171 78% 49% / .4); }
+  .badge.v-found { color: var(--accent); border-color: hsl(171 78% 49% / .5); background: hsl(171 78% 49% / .1); }
+  .badge.v-hunting { color: var(--secondary); border-color: hsl(267 89% 55% / .5); }
+  .badge.v-missed { color: var(--red-300); border-color: hsl(350 100% 78% / .4); }
+  .badge.v-pending { color: var(--fg-dim); }
+  .badge.t-running { color: var(--accent); border-color: hsl(171 78% 49% / .5); }
+  .badge.t-done { color: var(--fg-muted); border-color: var(--stroke); }
+  .badge.t-error { color: #fff; background: var(--primary); border-color: var(--primary); }
+  .badge.t-queued, .badge.t-pending, .badge.t-incomplete { color: var(--fg-dim); }
+
+  /* ---- target cards ---- */
+  .tcard { border-bottom: 1px solid var(--stroke); }
+  .thead { display: grid; grid-template-columns: 14px minmax(0, 1fr) minmax(140px, 32%) 78px; align-items: center;
+    gap: 6px 14px; width: 100%; padding: 13px 18px; background: none; border: 0; border-left: 3px solid transparent;
+    color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .thead:hover { background: hsl(248 55% 8% / 0.7); }
+  .thead:focus-visible { outline: 2px solid var(--secondary); outline-offset: -2px; }
+  .tcard.active .thead { border-left-color: var(--accent); }
+  .tcard.open .thead { background: hsl(248 55% 8% / 0.55); }
+  .chev { color: var(--fg-dim); font-size: 11px; transition: transform .15s ease; justify-self: center; }
+  .tcard.open .chev { transform: rotate(90deg); color: var(--fg-muted); }
+  .tid { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+  .tname { font-family: var(--sans); font-weight: 700; font-size: 15px; }
+  .tlive { grid-column: 2; font-size: 11.5px; color: var(--fg-dim); font-variant-numeric: tabular-nums; margin-top: -3px; }
+  .tlive .hid { font-family: var(--mono); color: var(--accent); }
+  .tprog { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .tprog .mfig { min-width: 0; font-size: 12px; color: var(--fg-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .tcost { font-family: var(--sans); color: var(--red-300); font-size: 12.5px; font-variant-numeric: tabular-nums; text-align: right; }
+  .tbody { display: none; padding: 2px 18px 16px 45px; }
+  .tcard.open .tbody { display: block; }
+  .tsub { color: var(--fg-dim); font-size: 12px; }
+  .vlist { margin-top: 10px; border: 1px solid var(--post-stroke); border-radius: 10px; overflow: hidden; }
+  .vrow { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 4px 10px; padding: 9px 12px; align-items: start; }
+  .vrow + .vrow { border-top: 1px solid hsl(257 69% 23% / 0.4); }
+  .vrow .badge { justify-self: start; margin-top: 2px; }
+  .vid { font-family: var(--mono); font-size: 11.5px; color: var(--accent); }
+  .vttl { font-size: 13px; color: var(--fg); }
+  .vmeta { grid-column: 2; font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+  .vmeta b { font-family: var(--sans); font-weight: 500; font-size: 10.5px; letter-spacing: .4px; text-transform: uppercase;
+    color: var(--fg-dim); margin-right: 4px; }
+  .vmeta .sep { color: var(--fg-dim); margin: 0 6px; }
+
+  /* ---- meters: fill carries severity, track is a lighter step of the same hue ---- */
+  .meter { position: relative; height: 8px; border-radius: 999px; background: hsl(171 78% 49% / .16); overflow: hidden; flex: 1; min-width: 60px; }
+  .meter > span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--accent); }
+  .meter.warn { background: hsl(42 95% 60% / .16); }   .meter.warn > span { background: var(--gadget); }
+  .meter.crit { background: hsl(350 100% 64% / .16); } .meter.crit > span { background: var(--primary); }
+  .mrow { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .mrow .ml { font-family: var(--sans); font-size: 11px; letter-spacing: .6px; text-transform: uppercase; color: var(--fg-dim); width: 64px; flex: none; }
+  .mrow .mfig { font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 118px; text-align: right; }
+
+  /* ---- instance table ---- */
+  .tblwrap { overflow-x: auto; margin-top: 12px; }
+  .tblcap { font-family: var(--sans); font-size: 11px; letter-spacing: .6px; text-transform: uppercase; color: var(--fg-dim); }
+  .tbl { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .tbl th { text-align: left; font-family: var(--sans); font-weight: 500; font-size: 10.5px; letter-spacing: .5px;
+    text-transform: uppercase; color: var(--fg-dim); padding: 4px 8px; border-bottom: 1px solid var(--stroke); }
+  .tbl td { padding: 5px 8px; border-bottom: 1px solid hsl(257 69% 23% / 0.32); color: var(--fg-muted); vertical-align: top; }
+  .tbl td.num { text-align: right; } .tbl th.num { text-align: right; }
+  .tbl td.err { color: var(--red-300); }
+
+  /* ---- current hunt panel ---- */
+  .hunt { padding: 14px 18px 16px; border-bottom: 1px solid var(--stroke); }
+  .hunt .hrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .hunt .hid { font-family: var(--mono); font-size: 12.5px; color: var(--accent); }
+  .hunt .kv { font-size: 12px; color: var(--fg-muted); margin-top: 8px; }
+  .hunt .kv b { font-family: var(--sans); font-weight: 500; font-size: 10.5px; letter-spacing: .4px; text-transform: uppercase;
+    color: var(--fg-dim); margin-right: 6px; }
+  .hunt .items { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .hunt .links { display: grid; gap: 6px; margin-top: 12px; font-size: 12px; }
+  .hunt .links .lrow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .hunt .links .lrow code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal; }
+  .btn { font-family: var(--body); font-size: 11.5px; color: var(--fg-muted); background: var(--bg-code);
+    border: 1px solid var(--post-stroke); border-radius: 8px; padding: 3px 8px; cursor: pointer; flex: none; }
+  .btn:hover { border-color: var(--secondary); color: var(--fg); }
+  .empty { padding: 18px; color: var(--fg-dim); font-size: 13px; }
+  .empty code { white-space: nowrap; }
+  .warnline { margin-top: 8px; font-size: 12px; color: var(--red-300); }
+
+  /* ---- activity (hackbot transcript rows) ---- */
+  .ev { padding: 7px 18px 7px 16px; border-left: 3px solid transparent; }
+  .ev + .ev { border-top: 1px solid hsl(257 69% 23% / 0.32); }
+  .ev .meta { display: flex; align-items: center; gap: 8px; font-size: 11px; font-family: var(--sans); color: var(--fg-dim); margin-bottom: 2px; }
+  .ev .who { color: var(--fg-muted); font-weight: 600; font-family: var(--mono); font-size: 11px; }
+  .ev .time { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .ev .kindtag { font-size: 10px; letter-spacing: .5px; text-transform: uppercase; padding: 1px 6px; border-radius: 5px;
+    border: 1px solid var(--post-stroke); color: var(--fg-dim); }
+  .ev .text { font-size: 12.5px; color: hsl(260 40% 86%); word-break: break-word; }
+  .ev.found { border-left-color: var(--primary); background: hsl(350 100% 64% / 0.06); }
+  .ev.found .kindtag { color: var(--primary); border-color: hsl(350 100% 64% / .45); }
+  .ev.judged { border-left-color: var(--secondary); }
+  .ev.keyword_hit { border-left-color: var(--accent); }
+  .ev.item { border-left-color: var(--stroke); }
+  .ev.phase { border-left-color: hsl(171 60% 30%); }
+  .ev.error { border-left-color: var(--primary); }
+  .ev.error .text { color: var(--red-300); }
+
+  .gate { max-width: 560px; margin: 12vh auto; padding: 22px 26px; background: var(--bg-raise);
+    border: 1px solid var(--stroke); border-radius: var(--radius); }
+  .gate h1 { font-family: var(--sans); font-size: 18px; margin: 0 0 8px; }
+  .gate p { color: var(--fg-muted); margin: 6px 0; }
+
+  @media (max-width: 960px) {
+    .app { height: auto; }
+    main { grid-template-columns: minmax(0, 1fr); }
+    .counters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    header.site, .colhead, .tcard, .hunt, .ev { padding-left: 16px; padding-right: 16px; }
+    main > section { border-right: 0; border-bottom: 1px solid var(--stroke); }
+    header .title { max-width: 100%; }
+    .vrow { grid-template-columns: 1fr; } .vmeta { grid-column: 1; }
+    .thead { grid-template-columns: 14px minmax(0, 1fr) auto; padding-left: 13px; padding-right: 16px; }
+    .chev { grid-row: 1; grid-column: 1; } .tid { grid-row: 1; grid-column: 2; } .tcost { grid-row: 1; grid-column: 3; }
+    .tprog { grid-row: 2; grid-column: 2 / -1; } .tlive { grid-row: 3; grid-column: 2 / -1; margin-top: 0; }
+    .tbody { padding-left: 16px; padding-right: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <header class="site">
+    <span class="dot" aria-hidden="true"></span>
+    <span class="brand">hackbench</span>
+    <span class="crumb">benchmark monitor</span>
+    <span class="title" id="title"></span>
+    <span class="spacer"></span>
+    <span class="updated" id="updated"></span>
+    <span class="pill" id="state"><span class="ind"></span><span id="statetxt">connecting…</span></span>
+    <label><span class="crumb" style="margin-right:6px">run</span><select id="runsel" aria-label="Run"></select></label>
+  </header>
+  <div class="counters" id="overview" role="region" aria-label="Benchmark overview"></div>
+  <main>
+    <section aria-label="Targets">
+      <div class="colhead">Targets <span class="count" id="tcount"></span><span class="spacer"></span><span id="judge"></span></div>
+      <div class="scroll" id="targets"></div>
+    </section>
+    <aside aria-label="Live">
+      <div class="colhead">Current hunt</div>
+      <div id="hunts"></div>
+      <div class="colhead">Activity <span class="count" id="ecount"></span></div>
+      <div id="events"></div>
+    </aside>
+  </main>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const POLL_MS = 5000;
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  // ---- token: from the URL fragment once, then sessionStorage; never sent anywhere but our own /api ----
+  let token = null;
+  const m = location.hash.match(/token=([0-9a-f]+)/);
+  if (m) { try { sessionStorage.setItem("hackbench-token", m[1]); } catch (e) {} token = m[1];
+           history.replaceState(null, "", location.pathname + location.search); }
+  if (!token) { try { token = sessionStorage.getItem("hackbench-token"); } catch (e) {} }
+
+  // expanded targets, per run, kept across refreshes and reloads
+  const openTargets = new Set((() => { try { return JSON.parse(sessionStorage.getItem("hackbench-open") || "[]"); } catch (e) { return []; } })());
+  const saveOpen = () => { try { sessionStorage.setItem("hackbench-open", JSON.stringify([...openTargets])); } catch (e) {} };
+
+  const params = new URLSearchParams(location.search);
+  let runId = params.get("run");
+  let timer = null;
+
+  async function api(path) {
+    const r = await fetch(path, { headers: token ? { Authorization: "Bearer " + token } : {}, cache: "no-store" });
+    if (r.status === 401) throw Object.assign(new Error("unauthorized"), { code: 401 });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    return r.json();
+  }
+
+  // ---- formatting (auto-compact, tabular) ----
+  const dur = (s) => { if (s == null) return "—"; s = Math.max(0, Math.round(s));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    return h ? `${h}h${String(m).padStart(2, "0")}m` : `${m}m${String(x).padStart(2, "0")}s`; };
+  const usd = (x) => x == null ? "—" : (x >= 10000 ? "$" + (x / 1000).toFixed(1) + "K"
+    : "$" + Number(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const ago = (iso) => { if (!iso) return ""; const s = (Date.now() - Date.parse(iso)) / 1000;
+    return s < 60 ? `${Math.round(s)}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
+  const clock = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+
+  function meter(label, value, max, fig) {
+    const pct = max > 0 ? Math.min(100, (100 * value) / max) : 0;
+    const cls = pct >= 90 ? "crit" : pct >= 75 ? "warn" : "";
+    return `<div class="mrow"><span class="ml">${esc(label)}</span>
+      <div class="meter ${cls}" role="meter" aria-label="${esc(label)}" aria-valuemin="0" aria-valuemax="${max}" aria-valuenow="${value}">
+        <span style="width:${pct.toFixed(1)}%"></span></div><span class="mfig">${esc(fig)}</span></div>`;
+  }
+  // ---- overview ----
+  function renderOverview(s) {
+    const o = s.overview, t = o.time_to_find_s, c = o.cost_to_find_usd;
+    const tiles = [
+      ["hero", "Vulns found", `${o.found}<small> / ${o.vulns}</small>`, o.found_pct == null ? "nothing planned" : `${o.found_pct}% of the selected vulns`],
+      ["", "Targets", `${o.targets_done}<small> / ${o.targets} done</small>`, o.targets_running ? `${o.targets_running} hunting now` : "none hunting"],
+      ["cost", "Hunt spend", usd(o.hunt_cost_usd), `+ ${usd(o.judge_cost_usd)} judge`],
+      ["", "Hunt instances", String(o.instances), `${o.instances_running} running · ${o.errors} error${o.errors === 1 ? "" : "s"}`],
+      ["", "Wall time", dur(o.wall_s), s.meta.started_at ? `started ${new Date(s.meta.started_at).toLocaleString()}` : ""],
+      ["", "Median time to find", t.n ? dur(t.median) : "—", t.n ? `${dur(t.min)} – ${dur(t.max)} · n=${t.n}` : "no finds yet"],
+      ["cost", "Median cost to find", c.n ? usd(c.median) : "—", c.n ? `${usd(c.min)} – ${usd(c.max)}` : "no finds yet"],
+    ];
+    $("overview").innerHTML = tiles.map(([cls, k, v, sub]) =>
+      `<div class="counter ${cls}"><div class="k">${esc(k)}</div><div class="v">${v}</div><div class="sub">${esc(sub)}</div></div>`).join("");
+  }
+
+  // ---- targets ----
+  const instNo = (id) => "#" + String(id || "").split("#").pop();
+  function vulnRow(v, targetDone) {
+    const st = v.found ? "found" : v.hunting ? "hunting" : targetDone ? "missed" : "pending";
+    let meta = "";
+    if (v.found) {
+      meta = `<b>proved</b>${esc(v.item)} <span class="badge kind-${esc(v.tier)}">${esc(v.tier)}</span>`
+        + `<span class="sep">·</span>${esc(instNo(v.instance))}`
+        + `<span class="sep">·</span>${dur(v.time_to_find_s)} · ${usd(v.cost_to_find_usd)}`
+        + (v.campaign_time_s != null && v.campaign_time_s !== v.time_to_find_s
+           ? `<span class="sep">·</span>campaign ${dur(v.campaign_time_s)} · ${usd(v.campaign_cost_usd)}` : "")
+        + (v.decided_by ? `<span class="sep">·</span>${esc(v.decided_by)}` : "");
+    } else if (v.first_mention) {
+      const f = v.first_mention;
+      meta = `<b>first mention</b>${esc(f.item)} (${esc(f.tier)}) in ${esc(instNo(f.instance))} at ${dur(f.time_s)}`;
+    }
+    return `<div class="vrow"><span class="badge v-${st}">${st}</span>
+      <div><span class="vid">${esc(v.vuln)}</span> <span class="vttl">${esc(v.title || "")}</span></div>
+      ${meta ? `<div class="vmeta">${meta}</div>` : ""}</div>`;
+  }
+  function instTable(rows) {
+    if (!rows.length) return "";
+    const body = rows.map((r) => `<tr><td>${esc(instNo(r.instance))}</td>
+      <td class="${["setup_error", "launch_error", "omp_exited"].includes(r.status) ? "err" : ""}">${esc(r.status)}</td>
+      <td>${esc((r.found || []).join(", ") || "—")}${(r.refound || []).length
+        ? ` <span class="updated" title="proved again; an earlier instance found it first">(again: ${esc(r.refound.join(", "))})</span>` : ""}</td><td class="num">${dur(r.recon_s)}</td>
+      <td class="num">${dur(r.wall_s)}</td><td class="num">${usd(r.total_cost_usd)}</td>
+      <td>${esc((r.other_valid_items || []).join(", ") || "—")}</td></tr>`).join("");
+    return `<div class="tblwrap"><div class="tblcap">${rows.length} hunt instance${rows.length === 1 ? "" : "s"}</div><table class="tbl"><thead><tr><th>#</th><th>Status</th><th>Proved</th><th class="num">Recon</th><th class="num">Wall</th>
+      <th class="num">Cost</th><th>Other VALID</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+  function renderTargets(s) {
+    $("tcount").textContent = s.targets.length;
+    const j = s.judge || {};
+    $("judge").innerHTML = j.enabled === false ? `<span class="badge">judge off · keywords</span>`
+      : j.model ? `<span class="badge">judge ${esc(j.model)}${j.thinking ? " · " + esc(j.thinking) : ""}</span>` : "";
+    if (!s.targets.length) { $("targets").innerHTML = `<div class="empty">This run has no plan.</div>`; return; }
+    $("targets").innerHTML = s.targets.map((t) => {
+      const found = t.vulns.filter((v) => v.found).length, n = t.vulns.length;
+      const key = `${runId}:${t.id}`, isOpen = openTargets.has(key), a = t.active;
+      const pct = n ? (100 * found) / n : 0;
+      const b = t.budget || {};
+      const live = a ? `<div class="tlive"><span class="hid">${esc(instNo(a.instance))}</span> · ${esc(a.phase === "recon" ? "recon"
+        : a.phase === "hunt" ? "hunt · iter " + (a.iteration ?? "?") : "starting")} · ${dur(a.elapsed_s)} · ${usd(a.spent_usd)}</div>` : "";
+      return `<div class="tcard${isOpen ? " open" : ""}${a ? " active" : ""}">
+        <button class="thead" type="button" data-target="${esc(key)}" aria-expanded="${isOpen}" aria-controls="tb-${esc(t.id)}">
+          <span class="chev" aria-hidden="true">▶</span>
+          <span class="tid"><span class="tname">${esc(t.id)}</span><span class="badge t-${esc(t.status)}">${esc(t.status)}</span></span>
+          <span class="tprog"><span class="meter" role="meter" aria-label="Vulns found" aria-valuemin="0" aria-valuemax="${n}" aria-valuenow="${found}">
+            <span style="width:${pct.toFixed(1)}%"></span></span><span class="mfig">${found} / ${n} found</span></span>
+          <span class="tcost" title="hunt spend on this target">${usd(t.cost_usd)}</span>
+          ${live}
+        </button>
+        <div class="tbody" id="tb-${esc(t.id)}">
+          <div class="tsub">${esc(t.name || "")} · ${esc(t.strategy)}${b.max_hours ? ` · ${b.max_hours}h / ${usd(b.max_cost_usd)} per hunt` : ""}</div>
+          <div class="vlist">${t.vulns.map((v) => vulnRow(v, t.status === "done")).join("")}</div>${instTable(t.instances)}
+        </div></div>`;
+    }).join("");
+  }
+
+  // ---- current hunt ----
+  function renderHunts(s) {
+    if (!s.running.length) {
+      const st = s.state.state;
+      $("hunts").innerHTML = `<div class="empty">${st === "running" ? "Setting up the next hunt…"
+        : st === "done" ? "The run is finished." : "No hunt running. Resume with <code>bin/hackbench run --run-id " + esc(s.run_id) + "</code>."}</div>`;
+      return;
+    }
+    $("hunts").innerHTML = s.running.map((h) => {
+      const b = h.budget || {}, it = h.items || {};
+      const phase = h.phase === "recon" ? "recon" : h.phase === "hunt" ? `hunt · iter ${h.iteration ?? "?"}` : (h.state || "starting");
+      const tmux = `tmux -S $XDG_RUNTIME_DIR/hackbot.tmux attach -t ${h.tmux_session}`;
+      return `<div class="hunt">
+        <div class="hrow"><span class="hid">${esc(h.instance)}</span>
+          <span class="pill ${h.stale ? "stale" : "live"}"><span class="ind"></span>${esc(h.stale ? "stale" : phase)}</span></div>
+        <div class="kv"><b>hunting for</b>${esc((h.stop_set || []).join(", "))}</div>
+        ${meter("Time", (h.elapsed_s || 0) / 3600, b.max_hours || 0, `${dur(h.elapsed_s)} / ${b.max_hours ?? "∞"}h`)}
+        ${meter("Spend", h.spent_usd || 0, b.max_cost_usd || 0, `${usd(h.spent_usd)} / ${usd(b.max_cost_usd)}`)}
+        <div class="items"><span class="badge kind-finding">${it.finding || 0} findings</span>
+          <span class="badge kind-gadget">${it.gadget || 0} gadgets</span><span class="badge kind-lead">${it.lead || 0} leads</span>
+          <span class="badge v-found">${it.valid || 0} valid</span>${(h.found || []).map((f) =>
+            f.in_stop_set === false
+              ? `<span class="badge" title="${esc(f.item)}: an earlier instance found it first">again ${esc(f.vuln)}</span>`
+              : `<span class="badge kind-finding" title="${esc(f.item)}">proved ${esc(f.vuln)}</span>`).join("")}</div>
+        ${h.stale ? `<div class="warnline">No update for ${dur(h.age_s)}: is the bench still running?</div>` : ""}
+        <div class="links">
+          ${h.hackbot_dashboard ? `<div class="lrow"><a href="${esc(h.hackbot_dashboard)}" target="_blank" rel="noopener noreferrer">hackbot dashboard ↗</a>
+            <span class="updated">${esc(h.hackbot_dashboard)} (forward this port too)</span></div>` : ""}
+          <div class="lrow"><code title="${esc(tmux)}">${esc(tmux)}</code><button class="btn" data-copy="${esc(tmux)}">copy</button></div>
+          <div class="lrow"><code title="${esc(h.workspace)}">${esc(h.workspace)}</code><button class="btn" data-copy="${esc(h.workspace)}">copy</button></div>
+        </div><div class="updated" style="margin-top:6px">updated ${esc(ago(h.updated_at))}</div></div>`;
+    }).join("");
+  }
+
+  // ---- activity ----
+  const ERR = new Set(["timeout", "budget_exhausted", "omp_exited", "setup_error", "launch_error", "interrupted", "warning", "hunt_stopped"]);
+  function evText(e) {
+    switch (e.event) {
+      case "item": return `${e.id} (${e.tier}) ${e.verdict || ""} — ${e.title || ""}`;
+      case "keyword_hit": return `${e.id} (${e.tier}) mentions ${e.vuln}`;
+      case "judged": return `${e.id}: ${(e.vulns || []).join(", ") || "no known vuln"} · ${e.decided_by}${e.reason ? " — " + e.reason : ""}`;
+      case "found": return `${e.vuln} proved by ${e.id} (${e.tier})${e.in_stop_set === false ? " — already known" : ""}`;
+      case "recon_started": return "recon started";
+      case "hunt_started": return `recon done in ${dur(e.recon_s)}; hunt started`;
+      case "hunt_command_sent": return "/hunt sent";
+      case "omp_started": return "omp started";
+      case "workspace_ready": return `workspace ready (${e.setup_s}s)`;
+      case "stopped": return `stopped (${e.mode})`;
+      case "budget_exhausted": return `spend limit reached (${usd(e.spent)})`;
+      case "containers_removed": return `${e.count} container(s) removed`;
+      case "warning": return e.msg || "warning";
+      case "setup_error": case "launch_error": return e.error || e.event;
+      default: return e.event.replaceAll("_", " ");
+    }
+  }
+  function renderEvents(s) {
+    $("ecount").textContent = s.events.length;
+    if (!s.events.length) { $("events").innerHTML = `<div class="empty">No activity yet.</div>`; return; }
+    $("events").innerHTML = s.events.map((e) => {
+      const cls = e.event === "found" ? "found" : e.event === "judged" ? "judged" : e.event === "keyword_hit" ? "keyword_hit"
+        : e.event === "item" ? "item" : ERR.has(e.event) ? "error" : "phase";
+      return `<div class="ev ${cls}"><div class="meta"><span class="who">${esc(e.instance)}</span>
+        <span class="kindtag">${esc(e.event.replaceAll("_", " "))}</span><span class="time" title="${esc(e.t)}">${esc(clock(e.t))}</span></div>
+        <div class="text">${esc(evText(e))}</div></div>`;
+    }).join("");
+  }
+
+  // ---- header ----
+  function renderHeader(s) {
+    const st = s.state.state;
+    const live = st === "running", stale = st === "stopped";
+    $("state").className = "pill " + (live ? "live" : stale ? "stale" : "ended");
+    $("statetxt").textContent = live ? `running${s.state.current ? " · " + s.state.current : ""}`
+      : st === "done" ? "finished" : st === "interrupted" ? "interrupted" : stale ? "bench not running" : st;
+    const sel = s.meta.selection || {};
+    $("title").textContent = `${s.run_id}${sel.include && sel.include.length ? " · " + sel.include.join(" ") : ""}`;
+    $("updated").textContent = "updated " + clock(s.generated_at);
+    document.title = `hackbench · ${s.overview.found}/${s.overview.vulns} found · ${s.run_id}`;
+  }
+
+  function gate(msg) {
+    $("app").innerHTML = `<div class="gate"><h1>hackbench</h1><p>${msg}</p>
+      <p>Open the URL that <code>bin/hackbench serve</code> printed: it carries the access token after <code>#token=</code>.</p></div>`;
+  }
+
+  async function loadRuns() {
+    const r = await api("/api/runs");
+    const sel = $("runsel");
+    sel.innerHTML = r.runs.map((x) => `<option value="${esc(x.run_id)}">${esc(x.run_id)} · ${esc(x.state)}</option>`).join("");
+    if (!r.runs.length) {
+      $("targets").innerHTML = `<div class="empty">No runs yet under <code>${esc(r.runs_dir)}</code>. Start one with <code>bin/hackbench run</code>.</div>`;
+      $("statetxt").textContent = "no runs"; return false;
+    }
+    if (!runId || !r.runs.some((x) => x.run_id === runId)) runId = r.runs[0].run_id;
+    sel.value = runId;
+    return true;
+  }
+
+  async function refresh() {
+    clearTimeout(timer);
+    try {
+      const s = await api("/api/run/" + encodeURIComponent(runId));
+      renderHeader(s); renderOverview(s); renderTargets(s); renderHunts(s); renderEvents(s);
+    } catch (e) {
+      if (e.code === 401) return gate("This dashboard needs its access token.");
+      $("statetxt").textContent = "error: " + e.message;
+      $("state").className = "pill stale";
+    }
+    if (!document.hidden) timer = setTimeout(refresh, POLL_MS);
+  }
+
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+  document.addEventListener("click", (ev) => {
+    const th = ev.target.closest("[data-target]");
+    if (th) {
+      const key = th.dataset.target, card = th.closest(".tcard");
+      openTargets.has(key) ? openTargets.delete(key) : openTargets.add(key);
+      saveOpen();
+      card.classList.toggle("open", openTargets.has(key));
+      th.setAttribute("aria-expanded", String(openTargets.has(key)));
+      return;
+    }
+    const b = ev.target.closest("[data-copy]");
+    if (!b) return;
+    navigator.clipboard?.writeText(b.dataset.copy).then(() => { b.textContent = "copied"; setTimeout(() => (b.textContent = "copy"), 1200); });
+  });
+  $("runsel").addEventListener("change", (e) => {
+    runId = e.target.value;
+    const u = new URL(location.href); u.searchParams.set("run", runId); history.replaceState(null, "", u);
+    refresh();
+  });
+
+  (async () => {
+    if (!token) return gate("No access token.");
+    try { if (await loadRuns()) await refresh(); }
+    catch (e) { e.code === 401 ? gate("The access token was not accepted (the server restarts with a new one).") : ($("statetxt").textContent = "error: " + e.message); }
+  })();
+})();
+</script>
+</body>
+</html>
