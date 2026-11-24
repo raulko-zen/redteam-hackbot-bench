@@ -34,8 +34,10 @@ how long that took, and what it cost. `README.md` is the operator guide. Keep it
 
 ## Layout
 
-- `bench.yaml`: defaults (budgets, campaign, launcher, stop, detection, judge). A target's `budget:` and
-  `campaign:` override them, and the CLI overrides both.
+- `bench.yaml`: defaults (target selection, budgets, campaign, launcher, stop, detection, judge). A
+  target's `budget:` and `campaign:` override them, and the CLI overrides both. `targets.include` /
+  `targets.exclude` choose what runs (`-c` replaces include, `--exclude` adds); a pattern that matches
+  nothing is an error.
 - `hackbench/`: Python ≥ 3.9, stdlib plus PyYAML only. No other dependencies. Keep the syntax
   3.9-compatible: no `match`, no nested same-quote f-strings, `from __future__ import annotations`.
   - `config.py`: specs, lint, arch and OS selection.
@@ -96,6 +98,8 @@ A real run needs the Linux VM (`ssh raul@parallels-linux`): omp, tmux, the hackb
 - **Platform scope is explicit.** A vuln that only exists on another OS gets `os: [<os>]`. It is listed
   but not scored against a target with a different `os:` (default `linux`). Example: Codex's PowerShell
   `--%` bug is Windows-only.
+- **The judge is an Opus 5.5-grade model.** `judge.model` defaults to `anthropic/claude-opus-5-5` with
+  `thinking: high`. Do not lower it to save cost: the judge alone decides what counts as found.
 - **Spend is measured from omp's own records.** Cost comes from `usage.cost.total` on every assistant
   message and `model_usage` entry, in all session files of the instance, subagents included. Judge cost
   is reported separately and never mixed into hunt cost.

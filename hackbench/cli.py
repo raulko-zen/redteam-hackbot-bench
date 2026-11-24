@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
-from .config import REPO, deep_merge, host_arch, lint_target, load_bench, load_targets, select
+from .config import REPO, deep_merge, host_arch, lint_target, load_bench, load_targets, resolve_selection
 from .launcher import LaunchError, TmuxLauncher, hunt_host_status
 from .match import OmpJudge
 from .material import fetch
@@ -56,18 +56,31 @@ def _budget(b: dict, budget: dict) -> dict:
     return deep_merge(budget, b.get("_cli_budget"))
 
 
+def _selection(b: dict, args):
+    """(selection, include, exclude) from bench.yaml `targets:` and -c / --exclude; exits 2 on a bad pattern."""
+    try:
+        return resolve_selection(b, load_targets(), getattr(args, "case", None), getattr(args, "exclude", None))
+    except ValueError as e:
+        print(f"error: {e}")
+        raise SystemExit(2)
+
+
 # ---- commands -------------------------------------------------------------------------------------
 def cmd_list(args) -> int:
-    b = load_bench()
+    b = _bench(args)
+    selection, include, exclude = _selection(b, args)
+    chosen = {v.case_id for _, vs in selection for v in vs}
+    print(f"selection: include {include or ['*']}" + (f", exclude {exclude}" if exclude else "")
+          + "   (bench.yaml targets:, -c, --exclude; * = analyzed)\n")
     for t in load_targets():
         bud = t.budget(b)
         print(f"{t.id}  —  {t.name}  [{t.strategy}; {bud['max_hours']}h / ${bud['max_cost_usd']} per instance]")
         if t.strategy == "campaign":
             print(f"  prompt: {t.prompt}")
         for v in t.vulns:
-            print(f"  {v.case_id}  {v.title}")
+            print(f"  {'*' if v.case_id in chosen else ' '} {v.case_id}  {v.title}")
         for v in t.excluded:
-            print(f"  ({v.case_id}  not scored: {'/'.join(v.os or [])} only, target is {t.os})")
+            print(f"    ({v.case_id}  not scored: {'/'.join(v.os or [])} only, target is {t.os})")
     return 0
 
 
@@ -81,7 +94,7 @@ def cmd_lint(args) -> int:
 
 def cmd_fetch(args) -> int:
     b = _bench(args)
-    for t, _ in select(load_targets(), args.case):
+    for t, _ in _selection(b, args)[0]:
         log(f"{t.id} ({host_arch()})")
         fetch(t, Path(b["cache_dir"]), log=log)
     log("material cached")
@@ -131,7 +144,7 @@ def cmd_check(args) -> int:
     return 0 if ok else 1
 
 
-def _run_meta(b: dict, run_id: str, plan: dict) -> dict:
+def _run_meta(b: dict, run_id: str, plan: dict, include: list, exclude: list) -> dict:
     hb = Path(b["hackbot"])
     return {
         "run_id": run_id,
@@ -143,15 +156,16 @@ def _run_meta(b: dict, run_id: str, plan: dict) -> dict:
         "omp_version": _sh(["omp", "--version"]).splitlines()[0] if shutil.which("omp") else None,
         "host": {"system": platform.system(), "release": platform.release(), "arch": host_arch(), "node": platform.node()},
         "bench": {k: v for k, v in b.items() if not k.startswith("_")},
+        "selection": {"include": include, "exclude": exclude},
         "plan": plan,
     }
 
 
 def cmd_run(args) -> int:
     b = _bench(args)
-    selection = select(load_targets(), args.case)
+    selection, include, exclude = _selection(b, args)
     if not selection:
-        print("no cases match")
+        print("no cases selected (bench.yaml targets: / -c / --exclude)")
         return 2
     errs = [e for t, _ in selection for e in lint_target(t)]
     if errs:
@@ -169,6 +183,9 @@ def cmd_run(args) -> int:
 
     if args.dry_run:
         print(f"run {run_id} → {run_dir}   (arch {host_arch()})")
+        print(f"selection: include {include or ['*']}" + (f", exclude {exclude}" if exclude else ""))
+        j = b["judge"]
+        print(f"judge: {j['model']} (thinking {j.get('thinking') or 'default'})" if j["enabled"] else "judge: off (keywords decide)")
         for t, vs in selection:
             bud = _budget(b, t.budget(b))
             print(f"\n{t.id} [{t.strategy}, {t.os}] — {len(vs)} vuln(s): {', '.join(v.id for v in vs)}")
@@ -200,7 +217,8 @@ def cmd_run(args) -> int:
         print(f"error: {e}")
         return 2
     omp = shutil.which("omp") or "omp"
-    judge = OmpJudge(launcher.oneshot, b["judge"]["model"], int(b["judge"]["timeout_s"]), omp) if b["judge"]["enabled"] else None
+    judge = OmpJudge(launcher.oneshot, b["judge"]["model"], int(b["judge"]["timeout_s"]), omp,
+                     thinking=b["judge"].get("thinking")) if b["judge"]["enabled"] else None
 
     run_dir.mkdir(parents=True, exist_ok=True)
     if (run_dir / "run.json").exists():
@@ -209,7 +227,7 @@ def cmd_run(args) -> int:
             meta.setdefault("plan", {}).setdefault(tid, tp)
         write_json(run_dir / "run.json", meta)
     else:
-        write_json(run_dir / "run.json", _run_meta(b, run_id, plan))
+        write_json(run_dir / "run.json", _run_meta(b, run_id, plan, include, exclude))
         cfg = Path(b["hackbot"]) / ".omp" / "config.yml"
         if cfg.exists():
             shutil.copy2(cfg, run_dir / "hackbot-config.yml")
@@ -240,14 +258,12 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="hackbench", description="Benchmark redteam-hackbot (/hunt) on known-vulnerable targets.")
     p.add_argument("--config", help="bench config (default: bench.yaml in the repo)")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("list", help="list targets and their vulns")
+    ls = sub.add_parser("list", help="list targets and their vulns; * marks what the selection analyzes")
     sub.add_parser("lint", help="check every target spec")
     f = sub.add_parser("fetch", help="download and verify target material (this host's arch) into the cache")
-    f.add_argument("-c", "--case", action="append", help="target or target/vuln glob (repeatable)")
     c = sub.add_parser("check", help="preflight the host")
     c.add_argument("--launcher", choices=["auto", "hunt-host", "tmux"])
     r = sub.add_parser("run", help="run targets one hunt at a time")
-    r.add_argument("-c", "--case", action="append", help="target or target/vuln glob, e.g. 'codex-*' (repeatable; default all)")
     r.add_argument("--run-id", help="name of the run; reusing one resumes it")
     r.add_argument("--retry-errors", action="store_true", help="on resume, re-run an instance that ended in a setup/launch error or an interrupt")
     r.add_argument("--launcher", choices=["auto", "hunt-host", "tmux"])
@@ -257,6 +273,11 @@ def main(argv=None) -> int:
     r.add_argument("--no-judge", action="store_true", help="decide hits with the keyword matcher only")
     r.add_argument("--discard-workspaces", action="store_true", help="keep only sessions/, reports/ and recon/ of each instance")
     r.add_argument("--dry-run", action="store_true", help="print the plan and the /hunt lines, run nothing")
+    for sp in (ls, f, r):
+        sp.add_argument("-c", "--case", action="append",
+                        help="target or target/vuln glob, e.g. 'codex-*' (repeatable); replaces bench.yaml targets.include")
+        sp.add_argument("--exclude", action="append",
+                        help="target or target/vuln glob to skip (repeatable); added to bench.yaml targets.exclude")
     rp = sub.add_parser("report", help="(re)build summary.md / summary.json for a run")
     rp.add_argument("run", help="run id or run directory")
     args = p.parse_args(argv)

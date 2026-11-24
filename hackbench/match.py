@@ -113,9 +113,10 @@ OneShot = Callable[[str, Path, list, Path, int], "int | None"]
 
 
 class OmpJudge:
-    def __init__(self, oneshot: OneShot, model: str, timeout_s: int, omp: str = "omp"):
+    def __init__(self, oneshot: OneShot, model: str, timeout_s: int, omp: str = "omp", thinking: str | None = None):
         self.oneshot = oneshot
         self.model = model
+        self.thinking = thinking
         self.timeout_s = timeout_s
         self.omp = omp
         self.n = 0
@@ -128,6 +129,7 @@ class OmpJudge:
             argv = [
                 self.omp, "-p", "--session-dir", str(tmp / "sessions"), "--model", self.model,
                 "--no-tools", "--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "--no-title",
+                *(["--thinking", str(self.thinking)] if self.thinking else []),
                 "@" + str(tmp / "prompt.md"),
             ]
             rc = self.oneshot(f"judge-{self.n}", tmp, argv, tmp / "out.txt", self.timeout_s)
@@ -138,6 +140,7 @@ class OmpJudge:
                 "verdict": "error", "reason": f"unparseable judge output (rc={rc}): {out[-300:]!r}"}
             res["cost_usd"] = ct.total()
             res["model"] = self.model
+            res["thinking"] = self.thinking
             return res
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
