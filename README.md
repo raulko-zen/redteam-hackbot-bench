@@ -54,7 +54,8 @@ Each target runs as a **campaign**:
    - the hunt's items (`findings/`, `gadgets/`, `leads/`);
    - the omp session files for spend.
 4. **Detect.** Each new VALID finding or gadget (the `accept_tiers`) goes to the **judge**. The judge is
-   a one-shot `omp -p` with no tools. It sees the ground truth of *all* the target's known vulns and the
+   a one-shot `omp -p` with no tools, run on an Opus 5.5-grade model (`anthropic/claude-opus-5-5`, thinking
+   `high`; set by `judge.model` and `judge.thinking`). It sees the ground truth of *all* the target's known vulns and the
    sibling bugs that must not count, and names the vuln(s) the item proves, if any. If the judge is off
    or fails, keyword groups (`match.all_of`) decide instead.
 5. **Stop and move on.** The instance stops at the first proven vuln that no earlier instance found. A vuln
@@ -98,8 +99,9 @@ bin/hackbench check                 # omp, tmux, git, hackbot clone, hunt host, 
 bin/hackbench list
 bin/hackbench fetch                 # download + verify this host's arch material into cache_dir
 bin/hackbench run --dry-run         # the plan, the /hunt lines, the material
-bin/hackbench run                   # every target, one hunt at a time
+bin/hackbench run                   # the configured targets (bench.yaml targets:), one hunt at a time
 bin/hackbench run -c 'codex-*' --max-hours 6 --max-cost 150
+bin/hackbench run --exclude 'codex-cli-0.125.0/ZDI-26-305'   # skip one vuln for this run
 bin/hackbench run --run-id <id>                   # resume: continues each campaign where it stopped
 bin/hackbench run --run-id <id> --retry-errors    # also re-run an instance that hit a setup/launch error or Ctrl-C
 bin/hackbench report <id>                         # rebuild summary.md / summary.json
@@ -126,7 +128,15 @@ Put `work_root` on a case-sensitive, VM-local disk, not a Parallels shared folde
 package contains names that differ only in case (for example terminfo `L/LFT-PC850` and `l/lft-pc850`),
 and those collapse on a case-insensitive filesystem. `check` flags it.
 
-Defaults are in `bench.yaml`: budgets, campaign `max_misses`, stop mode, judge model and accepted tiers.
+**Choosing targets.** `bench.yaml` `targets.include` / `targets.exclude` decide what `run`, `fetch` and
+`list` analyze. Each entry is a glob over target ids (`gitlab-*`) or `target/vuln` ids
+(`codex-cli-0.125.0/CVE-2026-19592`), and an empty include means every target. On the command line, `-c`
+replaces the include list and `--exclude` adds to the exclude list. A pattern that matches nothing is an
+error, so a typo cannot silently drop a target. `list` marks the analyzed vulns with `*`, and each run
+records its selection in `run.json`.
+
+Defaults are in `bench.yaml`: target selection, budgets, campaign `max_misses`, stop mode, judge model and
+thinking level, and accepted tiers.
 A target's `budget:` and `campaign:` override them, and `--max-hours` / `--max-cost` override both.
 
 ## Layout

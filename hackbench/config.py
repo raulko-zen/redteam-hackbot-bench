@@ -36,7 +36,9 @@ DEFAULTS: dict = {
         "cleanup_containers": True,
     },
     "detection": {"accept_tiers": ["finding", "gadget"], "require_confirmed": False},
-    "judge": {"enabled": True, "model": "sonnet", "timeout_s": 300, "count_partial": False},
+    "judge": {"enabled": True, "model": "anthropic/claude-opus-5-5", "thinking": "high", "timeout_s": 600,
+              "count_partial": False},
+    "targets": {"include": [], "exclude": []},
     "keep_workspaces": True,
     "keep_material": False,
 }
@@ -189,15 +191,44 @@ def load_targets(root: Path = TARGETS_DIR) -> list[Target]:
     return targets
 
 
-def select(targets: list[Target], patterns: list[str] | None) -> list[tuple[Target, list[Vuln]]]:
-    """Targets with the vulns the patterns select (a target pattern selects all its vulns)."""
+def _hits(v: Vuln, p: str) -> bool:
+    return fnmatch.fnmatch(v.case_id, p) or fnmatch.fnmatch(v.target.id, p)
+
+
+def select(targets: list[Target], patterns: list[str] | None,
+           exclude: list[str] | None = None) -> list[tuple[Target, list[Vuln]]]:
+    """Targets with the vulns the patterns select, minus the excluded ones.
+
+    A pattern is a glob over target ids (`gitlab-*`, selecting all the target's vulns) or over
+    `target/vuln` case ids (`codex-cli-0.125.0/CVE-2026-19592`). No include patterns = every target.
+    """
     out = []
     for t in targets:
-        vs = [v for v in t.vulns if not patterns
-              or any(fnmatch.fnmatch(v.case_id, p) or fnmatch.fnmatch(t.id, p) for p in patterns)]
+        vs = [v for v in t.vulns
+              if (not patterns or any(_hits(v, p) for p in patterns))
+              and not any(_hits(v, p) for p in exclude or [])]
         if vs:
             out.append((t, vs))
     return out
+
+
+def resolve_selection(bench: dict, targets: list[Target], cli_include: list[str] | None = None,
+                      cli_exclude: list[str] | None = None) -> tuple[list[tuple[Target, list[Vuln]]], list[str], list[str]]:
+    """The targets/vulns this run analyzes: bench.yaml `targets.include`/`exclude`, where CLI `-c` replaces
+    the include list and CLI `--exclude` adds to the exclude list.
+
+    Returns (selection, include, exclude). Raises ValueError for a pattern that matches no target or vuln
+    (a typo must never silently drop a target from the benchmark).
+    """
+    cfg = bench.get("targets") or {}
+    include = list(cli_include or cfg.get("include") or [])
+    exclude = list(cfg.get("exclude") or []) + list(cli_exclude or [])
+    every = [v for t in targets for v in t.vulns + t.excluded]
+    unknown = [p for p in include + exclude if not any(_hits(v, p) for v in every)]
+    if unknown:
+        known = ", ".join(t.id for t in targets) or "none"
+        raise ValueError(f"no target or vuln matches {', '.join(repr(p) for p in unknown)} (targets: {known})")
+    return select(targets, include or None, exclude), include, exclude
 
 
 def lint_target(t: Target) -> list[str]:

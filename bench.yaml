@@ -12,6 +12,13 @@ work_root: ~/hackbench-work
 # Downloaded target material, verified by sha256 and reused across runs.
 cache_dir: ~/.cache/hackbench
 
+# Which targets/vulns `run`, `fetch` and `list` analyze. Globs over target ids ("gitlab-*") or over
+# target/vuln case ids ("codex-cli-0.125.0/CVE-2026-19592"). Empty include = every target under targets/.
+# CLI: -c replaces `include`, --exclude adds to `exclude`. A pattern that matches nothing is an error.
+targets:
+  include: []
+  exclude: []
+
 # What the bench types into omp to start each hunt. {prompt} is the vuln's stored prompt (one line).
 hunt_command: "/hunt --fresh '{prompt}'"
 
@@ -52,8 +59,9 @@ detection:
 
 judge:
   enabled: true           # LLM judge names which known vuln(s) of the target a VALID item proves; keywords are the fallback
-  model: sonnet           # omp --model pattern
-  timeout_s: 300
+  model: anthropic/claude-opus-5-5   # omp --model (exact provider/model): an Opus 5.5-grade model decides every hit
+  thinking: high          # omp --thinking for the judge: off | minimal | low | medium | high | xhigh | max
+  timeout_s: 600
   count_partial: false    # count a "partial" verdict (same root cause, incomplete) as found
 
 keep_workspaces: true     # false: delete each instance workspace after copying its sessions/, reports/ and recon/
